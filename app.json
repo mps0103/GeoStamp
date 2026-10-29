@@ -1,0 +1,8 @@
+{
+  "name": "GeoStamp",
+  "displayName": "GeoStamp Camera",
+  "react-native-google-mobile-ads": {
+    "android_app_id": "ca-app-pub-2904788540387890~9913585745",
+    "delay_app_measurement_init": true
+  }
+}
