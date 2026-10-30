@@ -19,7 +19,7 @@ import { buildStamp, currentHeading } from '../stamp';
 import { StampOverlay } from '../StampOverlay';
 import { Badge, IconButton } from '../components';
 import { C } from '../theme';
-import { cardinal, distanceText } from '../format';
+import { cardinal, distanceText, headingText } from '../format';
 
 type Props = {
   settings: Settings;
@@ -52,6 +52,10 @@ export function CameraScreen(p: Props) {
   const [now, setNow] = useState(Date.now());
   const [cameraError, setCameraError] = useState<string | null>(null);
   const flashAnim = useRef(new Animated.Value(0)).current;
+  const shutterScale = useRef(new Animated.Value(1)).current;
+  const thumbScale = useRef(new Animated.Value(1)).current;
+  const headScale = useRef(new Animated.Value(1)).current;
+  const front = lens === 'front';
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
@@ -84,11 +88,38 @@ export function CameraScreen(p: Props) {
   }
 
   const spec = useMemo(
-    () => buildStamp(s, { heading, location, tzShort: p.tzShort }, nextIdx, now).spec,
-    [s, heading, location, p.tzShort, nextIdx, now],
+    () => buildStamp(s, { heading, location, tzShort: p.tzShort }, nextIdx, now, front).spec,
+    [s, heading, location, p.tzShort, nextIdx, now, front],
   );
 
-  const hdg = currentHeading(heading, s);
+  const hdg = currentHeading(heading, s, front);
+  const hdgDecimals = s.compassAccuracy === 'high' ? 1 : 0;
+  // Selfie camera looks the other way, so the camera elevation is the opposite of the phone's pitch
+  const tilt = heading ? (front && !heading.flat ? -heading.pitch : heading.pitch) : null;
+
+  // Subtle pop on the heading readout whenever the cardinal direction changes
+  const cardinalNow = hdg == null ? null : cardinal(hdg);
+  const prevCardinal = useRef<string | null>(null);
+  useEffect(() => {
+    if (prevCardinal.current != null && cardinalNow != null && cardinalNow !== prevCardinal.current) {
+      Animated.sequence([
+        Animated.timing(headScale, { toValue: 1.06, duration: 90, useNativeDriver: true }),
+        Animated.timing(headScale, { toValue: 1, duration: 120, useNativeDriver: true }),
+      ]).start();
+    }
+    prevCardinal.current = cardinalNow;
+  }, [cardinalNow, headScale]);
+
+  // Pop the last-photo thumbnail when a new photo arrives (not on first mount)
+  const lastPhotoId = p.lastPhoto?.id ?? null;
+  const prevPhotoId = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (prevPhotoId.current !== undefined && lastPhotoId && lastPhotoId !== prevPhotoId.current) {
+      thumbScale.setValue(0.8);
+      Animated.spring(thumbScale, { toValue: 1, speed: 24, bounciness: 10, useNativeDriver: true }).start();
+    }
+    prevPhotoId.current = lastPhotoId;
+  }, [lastPhotoId, thumbScale]);
   const compassBad = heading ? heading.accuracy < 2 || heading.interference : false;
   const gpsAcc = location?.accuracy;
   const gpsColor = gpsAcc == null ? C.danger : gpsAcc <= 10 ? C.ok : gpsAcc <= 30 ? C.warn : C.danger;
@@ -106,10 +137,14 @@ export function CameraScreen(p: Props) {
     try {
       const index = await GeoStore.nextIndex();
       const { heading: lh, location: ll } = p.latest.current;
-      const { spec: sp, meta } = buildStamp(s, { heading: lh, location: ll, tzShort: p.tzShort }, index, Date.now());
+      const { spec: sp, meta } = buildStamp(s, { heading: lh, location: ll, tzShort: p.tzShort }, index, Date.now(), lens === 'front');
       Animated.sequence([
         Animated.timing(flashAnim, { toValue: 1, duration: 60, useNativeDriver: true }),
         Animated.timing(flashAnim, { toValue: 0, duration: 220, useNativeDriver: true }),
+      ]).start();
+      Animated.sequence([
+        Animated.timing(shutterScale, { toValue: 0.85, duration: 80, useNativeDriver: true }),
+        Animated.timing(shutterScale, { toValue: 1, duration: 80, useNativeDriver: true }),
       ]).start();
       Vibration.vibrate(15);
       const rec = await GeoCamera.takePhoto({
@@ -129,7 +164,7 @@ export function CameraScreen(p: Props) {
     } finally {
       setBusy(false);
     }
-  }, [busy, countdown, s, p, flashAnim]);
+  }, [busy, countdown, s, p, flashAnim, shutterScale, lens]);
 
   const cycleFlash = () => setFlash(f => (f === 'off' ? 'auto' : f === 'auto' ? 'on' : 'off'));
   const cycleTimer = () => p.update({ timer: s.timer === 0 ? 3 : s.timer === 3 ? 10 : 0 });
@@ -201,7 +236,9 @@ export function CameraScreen(p: Props) {
           <Pressable onPress={() => (location ? GeoLocation.refreshAddress() : GeoLocation.openLocationSettings())}>
             <Badge text={gpsAcc == null ? 'GPS searching…' : `GPS ±${distanceText(gpsAcc, s.units)}`} color={gpsColor} />
           </Pressable>
-          <Text style={styles.readoutBig}>{hdg == null ? '—' : `${Math.round(hdg) % 360}° ${cardinal(hdg)}`}</Text>
+          <Animated.Text style={[styles.readoutBig, { transform: [{ scale: headScale }] }]}>
+            {hdg == null ? '—' : headingText(hdg, hdgDecimals)}
+          </Animated.Text>
           <Pressable onPress={p.openCalibration}>
             <Badge
               text={!heading ? 'No compass' : compassBad ? 'Calibrate' : heading.flat ? 'Flat mode' : 'Camera mode'}
@@ -211,7 +248,7 @@ export function CameraScreen(p: Props) {
         </View>
         <Text style={styles.readoutSmall}>
           {s.northRef === 'true' ? 'True North' : 'Magnetic North'}
-          {heading ? `  ·  Tilt ${Math.round(heading.pitch)}°` : ''}
+          {tilt != null ? `  ·  Tilt ${Math.round(tilt)}°` : ''}
           {heading && heading.accuracyDeg > 0 ? `  ·  ±${Math.round(heading.accuracyDeg)}°` : ''}
         </Text>
 
@@ -227,15 +264,19 @@ export function CameraScreen(p: Props) {
         )}
 
         <View style={styles.controls}>
-          <Pressable style={styles.thumbWrap} onPress={() => (p.lastPhoto ? p.openViewer(p.lastPhoto) : p.openGallery())}>
-            {p.lastPhoto ? (
-              <Image source={{ uri: 'file://' + p.lastPhoto.thumb }} style={styles.thumb} />
-            ) : (
-              <Text style={{ color: C.sub, fontSize: 11, fontWeight: '700' }}>Gallery</Text>
-            )}
-          </Pressable>
+          <Animated.View style={{ transform: [{ scale: thumbScale }] }}>
+            <Pressable style={styles.thumbWrap} onPress={() => (p.lastPhoto ? p.openViewer(p.lastPhoto) : p.openGallery())}>
+              {p.lastPhoto ? (
+                <Image source={{ uri: 'file://' + p.lastPhoto.thumb }} style={styles.thumb} />
+              ) : (
+                <Text style={{ color: C.sub, fontSize: 11, fontWeight: '700' }}>Gallery</Text>
+              )}
+            </Pressable>
+          </Animated.View>
           <Pressable onPress={capture} style={({ pressed }) => [styles.shutterOuter, pressed && { transform: [{ scale: 0.94 }] }]}>
-            <View style={styles.shutterInner}>{busy && <ActivityIndicator color={C.bg} />}</View>
+            <Animated.View style={[styles.shutterInner, { transform: [{ scale: shutterScale }] }]}>
+              {busy && <ActivityIndicator color={C.bg} />}
+            </Animated.View>
           </Pressable>
           <View style={{ alignItems: 'center', gap: 6 }}>
             <Pressable style={styles.flipBtn} onPress={() => setLens(l => (l === 'back' ? 'front' : 'back'))}>

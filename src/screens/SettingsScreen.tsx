@@ -1,12 +1,88 @@
-import React from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import React, { useEffect, useRef } from 'react';
+import { Animated, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { DEFAULTS, Settings } from '../settings';
-import { ChoiceRow, IconButton, Section, styles as cs, ToggleRow } from '../components';
+import { ChoiceRow, FadeIn, IconButton, Section as PlainSection, styles as cs, ToggleRow } from '../components';
 import { C, STAMP_COLORS } from '../theme';
 import { GeoStore } from '../native';
+import { appAlert } from '../dialog';
 
 type Props = { settings: Settings; update: (p: Partial<Settings>) => void; back: () => void; openCalibration: () => void };
+
+const SECTION_ORDER = ['STAMP STYLE', 'WHAT TO SHOW ON PHOTO', 'COMPASS', 'CAMERA', 'PDF & EXPORTS', 'PAGE LAYOUT (PDF & WORD)', 'OTHER'];
+
+const PAGE_LINE_COLORS: Settings['gridBorderColor'][] = ['#0F172A', '#64748B', '#0EA5E9', '#DC2626'];
+
+/** Small page thumbnail with a 2x3 grid of grey boxes that follows the PAGE LAYOUT settings. */
+function LayoutPreview({ s }: { s: Settings }) {
+  const ratio = s.pageSize === 'letter' ? 11 / 8.5 : 297 / 210;
+  const long = 160;
+  const landscape = s.pageOrientation === 'landscape';
+  const target = {
+    w: landscape ? long : long / ratio,
+    h: landscape ? long / ratio : long,
+    gap: s.gridGap === 'none' ? 0 : s.gridGap === 'small' ? 3 : 6,
+    bw: s.gridBorder === 'none' ? 0 : s.gridBorder === 'thick' ? 3 : 1,
+    radius: s.gridRounded ? 4 : 0,
+    color: s.gridBorderColor as string,
+  };
+  const key = JSON.stringify(target);
+  const from = useRef(target);
+  const to = useRef(target);
+  const t = useRef(new Animated.Value(1)).current;
+  const lastKey = useRef(key);
+  if (lastKey.current !== key) {
+    // New settings: animate from what was shown to the new look
+    lastKey.current = key;
+    from.current = to.current;
+    to.current = target;
+  }
+  useEffect(() => {
+    t.setValue(0);
+    Animated.timing(t, { toValue: 1, duration: 200, useNativeDriver: false }).start();
+  }, [key, t]);
+
+  const lerp = <K extends 'w' | 'h' | 'gap' | 'bw' | 'radius'>(k: K) => t.interpolate({ inputRange: [0, 1], outputRange: [from.current[k], to.current[k]] });
+  const color = t.interpolate({ inputRange: [0, 1], outputRange: [from.current.color, to.current.color] });
+  const gapHalf = Animated.divide(lerp('gap'), 2);
+  const borderStyle = s.gridBorder === 'dashed' ? 'dashed' : s.gridBorder === 'dotted' ? 'dotted' : 'solid';
+
+  return (
+    <View style={styles.pvWrap}>
+      <Animated.View style={[styles.pvPage, { width: lerp('w'), height: lerp('h') }]}>
+        {s.pageHeader && <View style={styles.pvHeader} />}
+        <View style={{ flex: 1 }}>
+          {[0, 1, 2].map(r => (
+            <View key={r} style={{ flex: 1, flexDirection: 'row' }}>
+              {[0, 1].map(c => (
+                <Animated.View
+                  key={c}
+                  style={[
+                    styles.pvCell,
+                    { margin: gapHalf, borderWidth: lerp('bw'), borderColor: color, borderRadius: lerp('radius'), borderStyle },
+                  ]}>
+                  {s.gridBorder === 'double' && (
+                    <Animated.View style={[styles.pvInner, { borderColor: color, borderRadius: Animated.multiply(lerp('radius'), 0.5) }]} />
+                  )}
+                </Animated.View>
+              ))}
+            </View>
+          ))}
+        </View>
+      </Animated.View>
+      <Text style={styles.pvLabel}>Preview</Text>
+    </View>
+  );
+}
+
+/** Section that fades in with a small stagger by its position on the screen. */
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <FadeIn delay={Math.max(0, SECTION_ORDER.indexOf(title)) * 50}>
+      <PlainSection title={title}>{children}</PlainSection>
+    </FadeIn>
+  );
+}
 
 function Input({ label, value, onChange, placeholder, multiline }: { label: string; value: string; onChange: (v: string) => void; placeholder?: string; multiline?: boolean }) {
   return (
@@ -122,6 +198,16 @@ export function SettingsScreen({ settings: s, update, back, openCalibration }: P
 
         <Section title="COMPASS">
           <ChoiceRow label="North reference" value={s.northRef} onChange={v => update({ northRef: v })} options={[{ value: 'true', label: 'True North (GPS corrected)' }, { value: 'magnetic', label: 'Magnetic North' }]} />
+          <ChoiceRow
+            label="Compass accuracy"
+            value={s.compassAccuracy}
+            onChange={v => update({ compassAccuracy: v })}
+            options={[
+              { value: 'high', label: 'High (best, more battery)' },
+              { value: 'medium', label: 'Medium' },
+              { value: 'low', label: 'Low (saves battery)' },
+            ]}
+          />
           <Pressable style={cs.row} onPress={openCalibration}>
             <Text style={[cs.rowLabel, { flex: 1 }]}>Calibrate compass</Text>
             <Text style={{ color: C.accent, fontWeight: '700' }}>Open ›</Text>
@@ -142,17 +228,88 @@ export function SettingsScreen({ settings: s, update, back, openCalibration }: P
         <Section title="PDF & EXPORTS">
           <Input label="Report title" value={s.reportTitle} onChange={v => update({ reportTitle: v })} />
           <Input label="Prepared by" value={s.reportAuthor} onChange={v => update({ reportAuthor: v })} placeholder="Your name / company" />
-          <ChoiceRow label="PDF layout" value={s.pdfLayout} onChange={v => update({ pdfLayout: v })} options={[{ value: 'single', label: '1 photo per page' }, { value: 'double', label: '2 photos per page' }]} />
-          <ToggleRow label="Also save exports to Downloads" hint="Downloads/GeoStamp" value={s.saveExportsToDownloads} onChange={v => update({ saveExportsToDownloads: v })} />
+          <ToggleRow
+            label="Include details with each photo"
+            hint="Table of date, coordinates, direction, address… under the photo (PDF & Word, 1 or 2 per page). Turn off if the stamp already shows what you need."
+            value={s.pageDetails}
+            onChange={v => update({ pageDetails: v })}
+          />
+          <ChoiceRow label="Multiple pages layout" value={s.pdfLayout} onChange={v => update({ pdfLayout: v })} options={[{ value: 'single', label: '1 photo per page' }, { value: 'double', label: '2 photos per page' }]} />
+        </Section>
+
+        <Section title="PAGE LAYOUT (PDF & WORD)">
+          <LayoutPreview s={s} />
+          <ChoiceRow
+            label="Lines"
+            value={s.gridBorder}
+            onChange={v => update({ gridBorder: v })}
+            options={[
+              { value: 'none', label: 'None' },
+              { value: 'thin', label: 'Thin' },
+              { value: 'thick', label: 'Thick' },
+              { value: 'double', label: 'Double' },
+              { value: 'dashed', label: 'Dashed' },
+              { value: 'dotted', label: 'Dotted' },
+            ]}
+          />
+          <View style={cs.rowCol}>
+            <Text style={[cs.rowLabel, { marginBottom: 8 }]}>Line colour</Text>
+            <View style={cs.chips}>
+              {PAGE_LINE_COLORS.map(c => (
+                <Pressable key={c} onPress={() => update({ gridBorderColor: c })} style={[styles.swatch, { backgroundColor: c }, s.gridBorderColor === c && styles.swatchOn]} />
+              ))}
+            </View>
+          </View>
+          <ChoiceRow
+            label="Spacing"
+            value={s.gridGap}
+            onChange={v => update({ gridGap: v })}
+            options={[
+              { value: 'none', label: 'None' },
+              { value: 'small', label: 'Small' },
+              { value: 'large', label: 'Large' },
+            ]}
+          />
+          <ChoiceRow
+            label="Caption under photo"
+            value={s.gridCaption}
+            onChange={v => update({ gridCaption: v })}
+            options={[
+              { value: 'none', label: 'None' },
+              { value: 'index', label: 'Photo no.' },
+              { value: 'date', label: 'Date & time' },
+              { value: 'indexHeading', label: 'No. + direction' },
+            ]}
+          />
+          <ChoiceRow
+            label="Page size"
+            value={s.pageSize}
+            onChange={v => update({ pageSize: v })}
+            options={[
+              { value: 'a4', label: 'A4' },
+              { value: 'letter', label: 'Letter' },
+            ]}
+          />
+          <ChoiceRow
+            label="Orientation"
+            value={s.pageOrientation}
+            onChange={v => update({ pageOrientation: v })}
+            options={[
+              { value: 'portrait', label: 'Portrait' },
+              { value: 'landscape', label: 'Landscape' },
+            ]}
+          />
+          <ToggleRow label="Show header (title, prepared by, date)" value={s.pageHeader} onChange={v => update({ pageHeader: v })} />
+          <ToggleRow label="Rounded corners (PDF only)" value={s.gridRounded} onChange={v => update({ gridRounded: v })} />
         </Section>
 
         <Section title="OTHER">
           <Pressable
             style={cs.row}
             onPress={() =>
-              Alert.alert('Reset photo number', 'Next photo will be #0001.', [
+              appAlert('Reset photo number', 'Next photo will be #0001.', [
+                { text: 'Reset', style: 'primary', onPress: () => GeoStore.resetIndex() },
                 { text: 'Cancel', style: 'cancel' },
-                { text: 'Reset', onPress: () => GeoStore.resetIndex() },
               ])
             }>
             <Text style={[cs.rowLabel, { flex: 1 }]}>Reset photo number</Text>
@@ -160,15 +317,15 @@ export function SettingsScreen({ settings: s, update, back, openCalibration }: P
           <Pressable
             style={cs.row}
             onPress={() =>
-              Alert.alert('Restore defaults', 'Reset all settings?', [
-                { text: 'Cancel', style: 'cancel' },
+              appAlert('Restore defaults', 'Reset all settings?', [
                 { text: 'Reset', style: 'destructive', onPress: () => update({ ...DEFAULTS, onboarded: true }) },
+                { text: 'Cancel', style: 'cancel' },
               ])
             }>
             <Text style={[cs.rowLabel, { flex: 1, color: C.danger }]}>Restore default settings</Text>
           </Pressable>
         </Section>
-        <Text style={styles.footer}>GeoStamp Camera · v1.0 · Works offline (address needs internet once)</Text>
+        <Text style={styles.footer}>GeoStamp Camera · v1.2 · Works offline (address needs internet once)</Text>
       </ScrollView>
     </View>
   );
@@ -182,4 +339,10 @@ const styles = StyleSheet.create({
   swatch: { width: 34, height: 34, borderRadius: 17, borderWidth: 2, borderColor: C.border },
   swatchOn: { borderColor: C.accent, borderWidth: 4 },
   footer: { color: C.muted, textAlign: 'center', fontSize: 12, marginTop: 6 },
+  pvWrap: { alignItems: 'center', paddingVertical: 14, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border },
+  pvPage: { backgroundColor: '#fff', padding: 8, borderRadius: 2 },
+  pvHeader: { height: 5, width: '55%', backgroundColor: '#94A3B8', marginBottom: 5, borderRadius: 1 },
+  pvCell: { flex: 1, backgroundColor: '#CBD5E1' },
+  pvInner: { position: 'absolute', left: 2, top: 2, right: 2, bottom: 2, borderWidth: 1 },
+  pvLabel: { color: C.muted, fontSize: 11, marginTop: 6 },
 });

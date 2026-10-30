@@ -30,6 +30,7 @@ export type Settings = {
   units: 'metric' | 'imperial';
   // Compass
   northRef: 'true' | 'magnetic';
+  compassAccuracy: 'high' | 'medium' | 'low';
   // Camera
   quality: 'max' | 'high' | 'medium';
   aspect: '4:3' | '16:9';
@@ -44,6 +45,16 @@ export type Settings = {
   reportAuthor: string;
   pdfLayout: 'single' | 'double';
   saveExportsToDownloads: boolean;
+  // Page layout (PDF & Word)
+  gridBorder: 'none' | 'thin' | 'thick' | 'double' | 'dashed' | 'dotted';
+  gridBorderColor: '#0F172A' | '#64748B' | '#0EA5E9' | '#DC2626';
+  gridGap: 'none' | 'small' | 'large';
+  gridCaption: 'none' | 'index' | 'date' | 'indexHeading';
+  pageSize: 'a4' | 'letter';
+  pageOrientation: 'portrait' | 'landscape';
+  pageHeader: boolean;
+  gridRounded: boolean;
+  pageDetails: boolean; // details table (date, coordinates, address…) under each photo in PDF / Word
   onboarded: boolean;
 };
 
@@ -74,6 +85,7 @@ export const DEFAULTS: Settings = {
   watermark: '',
   units: 'metric',
   northRef: 'true',
+  compassAccuracy: 'high',
   quality: 'max',
   aspect: '4:3',
   grid: false,
@@ -86,6 +98,15 @@ export const DEFAULTS: Settings = {
   reportAuthor: '',
   pdfLayout: 'single',
   saveExportsToDownloads: true,
+  gridBorder: 'thin',
+  gridBorderColor: '#0F172A',
+  gridGap: 'small',
+  gridCaption: 'none',
+  pageSize: 'a4',
+  pageOrientation: 'portrait',
+  pageHeader: true,
+  gridRounded: false,
+  pageDetails: true,
   onboarded: false,
 };
 

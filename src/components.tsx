@@ -1,6 +1,40 @@
-import React from 'react';
-import { Pressable, StyleSheet, Switch, Text, TextStyle, View, ViewStyle } from 'react-native';
+import React, { useEffect, useRef } from 'react';
+import { Animated, Pressable, StyleSheet, Switch, Text, TextStyle, View, ViewStyle } from 'react-native';
 import { C } from './theme';
+
+const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
+
+/** Spring the pressed element to 0.95 and back (native driver, ~150-250 ms). */
+function usePressScale() {
+  const scale = useRef(new Animated.Value(1)).current;
+  const to = (v: number) => Animated.spring(scale, { toValue: v, speed: 40, bounciness: 6, useNativeDriver: true }).start();
+  return { scale, onPressIn: () => to(0.95), onPressOut: () => to(1) };
+}
+
+/** Fades in and slides up once on mount. */
+export function FadeIn({
+  children,
+  delay = 0,
+  dy = 10,
+  duration = 220,
+  style,
+}: {
+  children: React.ReactNode;
+  delay?: number;
+  dy?: number;
+  duration?: number;
+  style?: ViewStyle;
+}) {
+  const v = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    Animated.timing(v, { toValue: 1, duration, delay, useNativeDriver: true }).start();
+  }, [v, duration, delay]);
+  return (
+    <Animated.View style={[style, { opacity: v, transform: [{ translateY: v.interpolate({ inputRange: [0, 1], outputRange: [dy, 0] }) }] }]}>
+      {children}
+    </Animated.View>
+  );
+}
 
 export function CompassRose({ heading, size = 96, showDegrees = false }: { heading: number; size?: number; showDegrees?: boolean }) {
   const r = size / 2;
@@ -79,19 +113,22 @@ export function IconButton({
   style?: ViewStyle;
   small?: boolean;
 }) {
+  const { scale, onPressIn, onPressOut } = usePressScale();
   return (
-    <Pressable
+    <AnimatedPressable
       onPress={onPress}
+      onPressIn={onPressIn}
+      onPressOut={onPressOut}
       hitSlop={8}
-      style={({ pressed }) => [
+      style={[
         styles.iconBtn,
         small && { paddingHorizontal: 10, paddingVertical: 6 },
         active && { backgroundColor: C.accent },
-        pressed && { opacity: 0.7 },
         style,
+        { transform: [{ scale }] },
       ]}>
       <Text style={[styles.iconBtnText, active && { color: '#04202A' }, small && { fontSize: 12 }]}>{label}</Text>
-    </Pressable>
+    </AnimatedPressable>
   );
 }
 
@@ -110,13 +147,16 @@ export function Button({
 }) {
   const bg = variant === 'primary' ? C.accent : variant === 'danger' ? C.danger : C.surface2;
   const fg = variant === 'primary' ? '#04202A' : '#fff';
+  const { scale, onPressIn, onPressOut } = usePressScale();
   return (
-    <Pressable
+    <AnimatedPressable
       disabled={disabled}
       onPress={onPress}
-      style={({ pressed }) => [styles.btn, { backgroundColor: bg, opacity: disabled ? 0.4 : pressed ? 0.8 : 1 }, style]}>
+      onPressIn={onPressIn}
+      onPressOut={onPressOut}
+      style={[styles.btn, { backgroundColor: bg, opacity: disabled ? 0.4 : 1 }, style, { transform: [{ scale }] }]}>
       <Text style={[styles.btnText, { color: fg }]}>{title}</Text>
-    </Pressable>
+    </AnimatedPressable>
   );
 }
 

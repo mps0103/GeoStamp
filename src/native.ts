@@ -85,9 +85,24 @@ export type StampSpec = {
 
 export type ExportResult = { path: string; name: string; savedTo: string | null };
 
+/** Page layout shared by PDF and Word exports (see Settings › PAGE LAYOUT). */
+export type PageLayout = {
+  border: 'none' | 'thin' | 'thick' | 'double' | 'dashed' | 'dotted';
+  borderColor: string;
+  gap: 'none' | 'small' | 'large';
+  caption: 'none' | 'index' | 'date' | 'indexHeading';
+  pageSize: 'a4' | 'letter';
+  orientation: 'portrait' | 'landscape';
+  header: boolean;
+  rounded: boolean;
+  /** Details table under each photo (1 or 2 per page layouts). */
+  details: boolean;
+};
+
 type HeadingNative = {
   start(): void;
   stop(): void;
+  setAccuracy(mode: 'high' | 'medium' | 'low'): void;
   isAvailable(): Promise<{ rotationVector: boolean; magnetometer: boolean; available: boolean }>;
 };
 type LocationNative = {
@@ -121,8 +136,9 @@ type StoreNative = {
   updateMeta(id: string, patch: Partial<PhotoMeta>): Promise<PhotoRecord>;
   shareFiles(paths: string[], mime: string, title: string): Promise<boolean>;
   openFile(path: string, mime: string): Promise<boolean>;
-  exportPdf(ids: string[], options: { title: string; author: string; layout: 'single' | 'double'; saveToDownloads: boolean }): Promise<ExportResult>;
+  exportPdf(ids: string[], options: { title: string; author: string; layout: 'single' | 'double' | 'grid'; saveToDownloads: boolean; page: PageLayout }): Promise<ExportResult>;
   exportCsv(ids: string[], saveToDownloads: boolean): Promise<ExportResult>;
+  exportDocx(ids: string[], options: { title: string; author: string; layout: 'single' | 'double' | 'grid'; page: PageLayout }): Promise<ExportResult>;
   exportKml(ids: string[], saveToDownloads: boolean): Promise<ExportResult>;
 };
 

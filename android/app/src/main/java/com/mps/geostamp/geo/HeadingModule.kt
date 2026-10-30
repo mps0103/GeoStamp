@@ -64,6 +64,9 @@ class HeadingModule(private val ctx: ReactApplicationContext) :
   private var lastEmit = 0L
   private var lastEmitted = Double.NaN
 
+  // "high" | "medium" | "low": sensor rate, smoothing strength and emit rate
+  @Volatile private var accuracyMode = "high"
+
   init {
     ctx.addLifecycleEventListener(this)
   }
@@ -81,6 +84,15 @@ class HeadingModule(private val ctx: ReactApplicationContext) :
   }
 
   @ReactMethod
+  fun setAccuracy(mode: String) {
+    accuracyMode = if (mode == "medium" || mode == "low") mode else "high"
+    if (registered) {
+      unregister()
+      register()
+    }
+  }
+
+  @ReactMethod
   fun isAvailable(promise: Promise) {
     val map = Arguments.createMap()
     map.putBoolean("rotationVector", rotationSensor != null)
@@ -94,15 +106,28 @@ class HeadingModule(private val ctx: ReactApplicationContext) :
 
   private fun register() {
     if (registered) return
-    val rate = SensorManager.SENSOR_DELAY_GAME
+    val rate = when (accuracyMode) {
+      "high" -> SensorManager.SENSOR_DELAY_FASTEST
+      "low" -> SensorManager.SENSOR_DELAY_UI
+      else -> SensorManager.SENSOR_DELAY_GAME
+    }
     if (rotationSensor != null) {
-      sm.registerListener(this, rotationSensor, rate)
+      registerSensor(rotationSensor, rate)
     } else {
-      accelSensor?.let { sm.registerListener(this, it, rate) }
+      accelSensor?.let { registerSensor(it, rate) }
     }
     // Magnetometer always registered: needed for fallback + accuracy & interference detection
-    magSensor?.let { sm.registerListener(this, it, rate) }
+    magSensor?.let { registerSensor(it, rate) }
     registered = true
+  }
+
+  // Android 12+ may refuse rates above 200 Hz without HIGH_SAMPLING_RATE_SENSORS; fall back to GAME
+  private fun registerSensor(sensor: Sensor, rate: Int) {
+    try {
+      sm.registerListener(this, sensor, rate)
+    } catch (_: SecurityException) {
+      sm.registerListener(this, sensor, SensorManager.SENSOR_DELAY_GAME)
+    }
   }
 
   private fun unregister() {
@@ -177,12 +202,18 @@ class HeadingModule(private val ctx: ReactApplicationContext) :
       // Adaptive smoothing: steady when still, fast when turning
       val dot = (sx * ux + sy * uy).coerceIn(-1.0, 1.0)
       val diff = Math.toDegrees(kotlin.math.acos(dot))
-      val alpha = when {
+      val baseAlpha = when {
         diff > 30 -> 0.55
         diff > 8 -> 0.30
         diff > 2 -> 0.15
         else -> 0.08
       }
+      val alphaScale = when (accuracyMode) {
+        "high" -> 0.6
+        "low" -> 1.4
+        else -> 1.0
+      }
+      val alpha = (baseAlpha * alphaScale).coerceAtMost(0.9)
       sx += alpha * (ux - sx)
       sy += alpha * (uy - sy)
       val n = hypot(sx, sy)
@@ -201,7 +232,12 @@ class HeadingModule(private val ctx: ReactApplicationContext) :
     smoothRoll = smoothAngle(smoothRoll, roll, 0.25)
 
     val now = SystemClock.elapsedRealtime()
-    if (now - lastEmit < 50) return
+    val minGapMs = when (accuracyMode) {
+      "high" -> 33L
+      "low" -> 100L
+      else -> 50L
+    }
+    if (now - lastEmit < minGapMs) return
     if (!lastEmitted.isNaN() && abs(angleDiff(lastEmitted, magnetic)) < 0.2 && now - lastEmit < 300) return
     lastEmit = now
     lastEmitted = magnetic

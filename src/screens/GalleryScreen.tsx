@@ -1,12 +1,13 @@
-import React, { useMemo, useState } from 'react';
-import { Alert, FlatList, Image, Pressable, StyleSheet, Text, ToastAndroid, useWindowDimensions, View } from 'react-native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Animated, FlatList, Image, Pressable, StyleSheet, Text, ToastAndroid, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ExportResult, GeoStore, PhotoRecord } from '../native';
+import { ExportResult, GeoStore, PageLayout, PhotoRecord } from '../native';
 import type { Settings } from '../settings';
 import { Button, IconButton } from '../components';
 import { C } from '../theme';
 import { shortDate } from '../format';
 import { AdBanner, showInterstitial } from '../ads';
+import { appAlert } from '../dialog';
 
 type Props = {
   photos: PhotoRecord[];
@@ -17,42 +18,148 @@ type Props = {
   open: (p: PhotoRecord) => void;
 };
 
-export async function shareExport(r: ExportResult, mime: string, label: string) {
-  if (r.savedTo) ToastAndroid.show(`Saved to ${r.savedTo}`, ToastAndroid.LONG);
-  await showInterstitial();
-  await GeoStore.shareFiles([r.path], mime, label);
+const MIME = {
+  pdf: 'application/pdf',
+  csv: 'text/csv',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+};
+
+type ExportLayout = 'single' | 'double' | 'grid';
+
+/** Settings › PAGE LAYOUT as the object the native PDF / Word exporters expect. */
+export function pageLayoutFrom(s: Settings): PageLayout {
+  return {
+    border: s.gridBorder,
+    borderColor: s.gridBorderColor,
+    gap: s.gridGap,
+    caption: s.gridCaption,
+    pageSize: s.pageSize,
+    orientation: s.pageOrientation,
+    header: s.pageHeader,
+    rounded: s.gridRounded,
+    details: s.pageDetails,
+  };
 }
 
-export async function runExport(kind: 'pdf' | 'csv' | 'kml' | 'share', ids: string[], photos: PhotoRecord[], s: Settings) {
+/** With 2+ photos, ask whether to export multiple pages or one single-page grid. null = cancelled. */
+function askLayout(kind: 'PDF' | 'Word', n: number, s: Settings): Promise<ExportLayout | null> {
+  if (n < 2) return Promise.resolve(s.pdfLayout);
+  return new Promise(resolve => {
+    appAlert(
+      `${kind} layout`,
+      `${n} photos selected`,
+      [
+        { text: 'Single page', style: 'primary', onPress: () => resolve('grid') },
+        { text: 'Multiple pages', style: 'default', onPress: () => resolve(s.pdfLayout) },
+        { text: 'Cancel', style: 'cancel', onPress: () => resolve(null) },
+      ],
+      { cancelable: true, onDismiss: () => resolve(null) },
+    );
+  });
+}
+
+/** Interstitial first, then a popup so the user can Share / Open / dismiss the saved file. */
+async function finishExport(r: ExportResult, mime: string) {
+  await showInterstitial();
+  appAlert('Saved', `Saved to ${r.savedTo ?? 'app storage'}`, [
+    {
+      text: 'Open',
+      style: 'primary',
+      onPress: () => GeoStore.openFile(r.path, mime).catch(() => ToastAndroid.show('No app found to open this file', ToastAndroid.SHORT)),
+    },
+    { text: 'Share', style: 'default', onPress: () => GeoStore.shareFiles([r.path], mime, 'Share').catch(() => {}) },
+    { text: 'Done', style: 'cancel' },
+  ]);
+}
+
+export async function runExport(kind: 'pdf' | 'csv' | 'docx' | 'share', ids: string[], photos: PhotoRecord[], s: Settings) {
   try {
     if (kind === 'share') {
       const paths = photos.filter(p => ids.includes(p.id)).map(p => p.path);
       await GeoStore.shareFiles(paths, 'image/jpeg', 'Share photos');
     } else if (kind === 'pdf') {
+      const layout = await askLayout('PDF', ids.length, s);
+      if (!layout) return;
       ToastAndroid.show('Creating PDF…', ToastAndroid.SHORT);
       const r = await GeoStore.exportPdf(ids, {
         title: s.reportTitle,
         author: s.reportAuthor,
-        layout: s.pdfLayout,
-        saveToDownloads: s.saveExportsToDownloads,
+        layout,
+        saveToDownloads: true,
+        page: pageLayoutFrom(s),
       });
-      await shareExport(r, 'application/pdf', 'Share PDF report');
+      await finishExport(r, MIME.pdf);
     } else if (kind === 'csv') {
-      const r = await GeoStore.exportCsv(ids, s.saveExportsToDownloads);
-      await shareExport(r, 'text/csv', 'Share CSV');
+      const r = await GeoStore.exportCsv(ids, true);
+      await finishExport(r, MIME.csv);
     } else {
-      const r = await GeoStore.exportKml(ids, s.saveExportsToDownloads);
-      await shareExport(r, 'application/vnd.google-earth.kml+xml', 'Share KML');
+      const layout = await askLayout('Word', ids.length, s);
+      if (!layout) return;
+      ToastAndroid.show('Creating Word file…', ToastAndroid.SHORT);
+      const r = await GeoStore.exportDocx(ids, { title: s.reportTitle, author: s.reportAuthor, layout, page: pageLayoutFrom(s) });
+      await finishExport(r, MIME.docx);
     }
   } catch (e: any) {
     ToastAndroid.show(e?.message || 'Export failed', ToastAndroid.LONG);
   }
 }
 
+/** Thumbnail that fades/scales in once, staggered by position; never replays when scrolled back. */
+function Thumb({ index, seen, id, children, style, onPress, onLongPress }: {
+  index: number;
+  seen: React.MutableRefObject<Set<string>>;
+  id: string;
+  children: React.ReactNode;
+  style: any;
+  onPress: () => void;
+  onLongPress: () => void;
+}) {
+  const animate = useRef(!seen.current.has(id)).current;
+  const v = useRef(new Animated.Value(animate ? 0 : 1)).current;
+  useEffect(() => {
+    seen.current.add(id);
+    if (!animate) return;
+    Animated.timing(v, { toValue: 1, duration: 220, delay: Math.min(index * 30, 300), useNativeDriver: true }).start();
+  }, [animate, id, index, seen, v]);
+  return (
+    <Animated.View style={[style, { opacity: v, transform: [{ scale: v.interpolate({ inputRange: [0, 1], outputRange: [0.92, 1] }) }] }]}>
+      <Pressable onPress={onPress} onLongPress={onLongPress} style={StyleSheet.absoluteFill}>
+        {children}
+      </Pressable>
+    </Animated.View>
+  );
+}
+
+/** Selection tick: small spring bounce whenever it is toggled. */
+function Check({ selected }: { selected: boolean }) {
+  const scale = useRef(new Animated.Value(1)).current;
+  const first = useRef(true);
+  useEffect(() => {
+    if (first.current) {
+      first.current = false;
+      return;
+    }
+    scale.setValue(selected ? 0.6 : 1.2);
+    Animated.spring(scale, { toValue: 1, speed: 30, bounciness: 14, useNativeDriver: true }).start();
+  }, [selected, scale]);
+  return <Animated.View style={[styles.check, selected && { backgroundColor: C.accent, borderColor: C.accent }, { transform: [{ scale }] }]} />;
+}
+
+/** Bottom action bar slides up when selection starts. */
+function SlideUp({ children }: { children: React.ReactNode }) {
+  const y = useRef(new Animated.Value(60)).current;
+  useEffect(() => {
+    Animated.timing(y, { toValue: 0, duration: 200, useNativeDriver: true }).start();
+  }, [y]);
+  return <Animated.View style={{ transform: [{ translateY: y }] }}>{children}</Animated.View>;
+}
+
 export function GalleryScreen({ photos, settings, loading, reload, back, open }: Props) {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const [selected, setSelected] = useState<string[]>([]);
+  const seenThumbs = useRef(new Set<string>());
+  const [lastAction, setLastAction] = useState<'share' | 'pdf' | 'csv' | 'docx'>('pdf');
   const selecting = selected.length > 0;
   const cols = 3;
   const size = (width - 4 * (cols + 1)) / cols;
@@ -62,10 +169,10 @@ export function GalleryScreen({ photos, settings, loading, reload, back, open }:
   const sections = useMemo(() => photos, [photos]);
 
   const remove = () => {
-    Alert.alert('Delete photos', `Delete ${selected.length} photo(s)?`, [
-      { text: 'Cancel', style: 'cancel' },
+    appAlert('Delete photos', `Delete ${selected.length} photo(s)?`, [
       {
         text: 'App only',
+        style: 'default',
         onPress: async () => {
           await GeoStore.remove(selected, false);
           setSelected([]);
@@ -81,6 +188,7 @@ export function GalleryScreen({ photos, settings, loading, reload, back, open }:
           reload();
         },
       },
+      { text: 'Cancel', style: 'cancel' },
     ]);
   };
 
@@ -115,37 +223,58 @@ export function GalleryScreen({ photos, settings, loading, reload, back, open }:
           onRefresh={reload}
           style={{ flex: 1 }}
           contentContainerStyle={{ padding: 2, paddingBottom: 12 }}
-          renderItem={({ item }) => {
+          renderItem={({ item, index }) => {
             const sel = selected.includes(item.id);
             return (
-              <Pressable
+              <Thumb
+                id={item.id}
+                index={index}
+                seen={seenThumbs}
+                style={{ width: size, height: size, margin: 2 }}
                 onPress={() => (selecting ? toggle(item.id) : open(item))}
-                onLongPress={() => toggle(item.id)}
-                style={{ width: size, height: size, margin: 2 }}>
+                onLongPress={() => toggle(item.id)}>
                 <Image source={{ uri: 'file://' + item.thumb }} style={styles.img} resizeMethod="resize" />
                 <View style={styles.cap}>
                   <Text style={styles.capText} numberOfLines={1}>
                     {item.meta.tag || shortDate(item.createdAt)}
                   </Text>
                 </View>
-                {selecting && <View style={[styles.check, sel && { backgroundColor: C.accent, borderColor: C.accent }]} />}
-              </Pressable>
+                {selecting && <Check selected={sel} />}
+              </Thumb>
             );
           }}
         />
       )}
 
       {selecting && (
-        <View style={styles.actions}>
-          <Button title="Share" variant="ghost" style={styles.act} onPress={() => runExport('share', selected, photos, settings)} />
-          <Button title="PDF" style={styles.act} onPress={() => runExport('pdf', selected, photos, settings)} />
-          <Button title="CSV" variant="ghost" style={styles.act} onPress={() => runExport('csv', selected, photos, settings)} />
-          <Button title="KML" variant="ghost" style={styles.act} onPress={() => runExport('kml', selected, photos, settings)} />
-          <Button title="Delete" variant="danger" style={styles.act} onPress={remove} />
-        </View>
+        <SlideUp>
+          <View style={styles.actions}>
+            {(
+              [
+                ['share', 'Share'],
+                ['pdf', 'PDF'],
+                ['csv', 'CSV'],
+                ['docx', 'Word'],
+              ] as const
+            ).map(([kind, title]) => (
+              <Button
+                key={kind}
+                title={title}
+                // the highlighted button is the one used last
+                variant={lastAction === kind ? 'primary' : 'ghost'}
+                style={styles.act}
+                onPress={() => {
+                  setLastAction(kind);
+                  runExport(kind, selected, photos, settings);
+                }}
+              />
+            ))}
+            <Button title="Delete" variant="danger" style={styles.act} onPress={remove} />
+          </View>
+        </SlideUp>
       )}
       {!selecting && photos.length > 0 && (
-        <Text style={styles.hint}>Long-press to select · export PDF, CSV, KML</Text>
+        <Text style={styles.hint}>Long-press to select · export PDF, CSV, Word</Text>
       )}
       <View style={{ paddingBottom: insets.bottom }}>
         <AdBanner />

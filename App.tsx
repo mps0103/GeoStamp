@@ -1,7 +1,7 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { AppState, BackHandler, PermissionsAndroid, Platform, StatusBar, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Animated, AppState, BackHandler, PermissionsAndroid, Platform, StatusBar, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { GeoLocation, GeoStore, PhotoRecord } from './src/native';
+import { GeoHeading, GeoLocation, GeoStore, PhotoRecord } from './src/native';
 import { DEFAULTS, loadSettings, saveSettings, Settings } from './src/settings';
 import { useSensors } from './src/useSensors';
 import { CameraScreen } from './src/screens/CameraScreen';
@@ -12,6 +12,7 @@ import { CalibrationModal } from './src/screens/CalibrationModal';
 import { Button } from './src/components';
 import { C } from './src/theme';
 import { initAds } from './src/ads';
+import { DialogHost } from './src/dialog';
 
 type Screen = { name: 'camera' | 'gallery' | 'settings' } | { name: 'viewer'; photo: PhotoRecord; from: 'camera' | 'gallery' };
 type Perm = 'checking' | 'granted' | 'denied';
@@ -35,6 +36,17 @@ export default function App() {
   const [calib, setCalib] = useState(false);
   const [tzShort, setTzShort] = useState('');
   const [appActive, setAppActive] = useState(true);
+  const screenAnim = useRef(new Animated.Value(1)).current;
+
+  // Fade + slide in non-camera screens (set before paint so there is no full-opacity flash)
+  useLayoutEffect(() => {
+    if (screen.name === 'camera') {
+      screenAnim.setValue(1);
+      return;
+    }
+    screenAnim.setValue(0);
+    Animated.timing(screenAnim, { toValue: 1, duration: 200, useNativeDriver: true }).start();
+  }, [screen.name, screenAnim]);
 
   const cameraVisible = screen.name === 'camera' && perm === 'granted' && appActive;
   const sensors = useSensors(perm === 'granted' && (screen.name === 'camera' || calib) && appActive);
@@ -60,6 +72,7 @@ export default function App() {
     (async () => {
       const s = await loadSettings();
       setSettings(s);
+      GeoHeading.setAccuracy(s.compassAccuracy);
       const info = await GeoStore.getDeviceInfo().catch(() => null);
       if (info) setTzShort(info.tzShort);
       setReady(true);
@@ -67,6 +80,10 @@ export default function App() {
       askPerms().finally(() => initAds());
     })();
   }, [reload, askPerms]);
+
+  useEffect(() => {
+    GeoHeading.setAccuracy(settings.compassAccuracy);
+  }, [settings.compassAccuracy]);
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', st => setAppActive(st === 'active'));
@@ -163,9 +180,18 @@ export default function App() {
             />
           </View>
         )}
-        {body && <View style={StyleSheet.absoluteFill}>{body}</View>}
+        {body && (
+          <Animated.View
+            style={[
+              StyleSheet.absoluteFill,
+              { opacity: screenAnim, transform: [{ translateY: screenAnim.interpolate({ inputRange: [0, 1], outputRange: [12, 0] }) }] },
+            ]}>
+            {body}
+          </Animated.View>
+        )}
       </View>
       <CalibrationModal visible={calib} heading={sensors.heading} close={() => setCalib(false)} />
+      <DialogHost />
     </SafeAreaProvider>
   );
 }

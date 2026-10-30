@@ -1,17 +1,19 @@
-import React from 'react';
-import { Alert, Image, Linking, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import React, { useState } from 'react';
+import { Image, Linking, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { GeoStore, PhotoRecord } from '../native';
 import type { Settings } from '../settings';
-import { Button, IconButton } from '../components';
+import { Button, FadeIn, IconButton } from '../components';
 import { C } from '../theme';
 import { runExport } from './GalleryScreen';
 import { AdBanner } from '../ads';
+import { appAlert } from '../dialog';
 
 type Props = { photo: PhotoRecord; photos: PhotoRecord[]; settings: Settings; back: () => void; deleted: () => void };
 
 export function ViewerScreen({ photo, photos, settings, back, deleted }: Props) {
   const insets = useSafeAreaInsets();
+  const [lastAction, setLastAction] = useState<'share' | 'pdf' | 'docx'>('share');
   const { width } = useWindowDimensions();
   const h = (width * photo.height) / Math.max(1, photo.width);
   const m = photo.meta;
@@ -24,10 +26,10 @@ export function ViewerScreen({ photo, photos, settings, back, deleted }: Props) 
   };
 
   const del = () =>
-    Alert.alert('Delete photo', 'Delete this photo?', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'App only', onPress: async () => { await GeoStore.remove([photo.id], false); deleted(); } },
+    appAlert('Delete photo', 'Delete this photo?', [
+      { text: 'App only', style: 'default', onPress: async () => { await GeoStore.remove([photo.id], false); deleted(); } },
       { text: 'Also from Gallery', style: 'destructive', onPress: async () => { await GeoStore.remove([photo.id], true); deleted(); } },
+      { text: 'Cancel', style: 'cancel' },
     ]);
 
   return (
@@ -39,26 +41,45 @@ export function ViewerScreen({ photo, photos, settings, back, deleted }: Props) 
       </View>
       <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 12 }}>
         <Image source={{ uri: 'file://' + photo.path }} style={{ width, height: h, backgroundColor: '#000' }} resizeMode="contain" />
-        <View style={styles.card}>
-          {(m.details || []).map((d, i) => (
-            <View key={i} style={styles.row}>
-              <Text style={styles.label}>{d.label}</Text>
-              <Text style={styles.value} selectable>
-                {d.value}
+        <FadeIn dy={16} duration={220}>
+          <View style={styles.card}>
+            {(m.details || []).map((d, i) => (
+              <View key={i} style={styles.row}>
+                <Text style={styles.label}>{d.label}</Text>
+                <Text style={styles.value} selectable>
+                  {d.value}
+                </Text>
+              </View>
+            ))}
+            <View style={styles.row}>
+              <Text style={styles.label}>Resolution</Text>
+              <Text style={styles.value}>
+                {photo.width} × {photo.height}
               </Text>
             </View>
-          ))}
-          <View style={styles.row}>
-            <Text style={styles.label}>Resolution</Text>
-            <Text style={styles.value}>
-              {photo.width} × {photo.height}
-            </Text>
           </View>
-        </View>
+        </FadeIn>
       </ScrollView>
       <View style={styles.actions}>
-        <Button title="Share" style={styles.act} onPress={() => runExport('share', [photo.id], photos.length ? photos : [photo], settings)} />
-        <Button title="PDF" variant="ghost" style={styles.act} onPress={() => runExport('pdf', [photo.id], [photo], settings)} />
+        {(
+          [
+            ['share', 'Share'],
+            ['pdf', 'PDF'],
+            ['docx', 'Word'],
+          ] as const
+        ).map(([kind, title]) => (
+          <Button
+            key={kind}
+            title={title}
+            // the highlighted button is the one used last
+            variant={lastAction === kind ? 'primary' : 'ghost'}
+            style={styles.act}
+            onPress={() => {
+              setLastAction(kind);
+              runExport(kind, [photo.id], kind === 'share' && photos.length ? photos : [photo], settings);
+            }}
+          />
+        ))}
         <Button title="Map" variant="ghost" style={styles.act} onPress={openMap} disabled={!hasGps} />
         <Button title="Delete" variant="danger" style={styles.act} onPress={del} />
       </View>

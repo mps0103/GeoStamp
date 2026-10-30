@@ -11,9 +11,11 @@ export function cardinal(deg: number): string {
   return DIRS16[i];
 }
 
-export function headingText(deg: number): string {
-  const d = Math.round(((deg % 360) + 360) % 360) % 360;
-  return `${d}° ${cardinal(d)}`;
+export function headingText(deg: number, decimals = 0): string {
+  const f = 10 ** decimals;
+  let d = Math.round((((deg % 360) + 360) % 360) * f) / f;
+  if (d >= 360) d = 0;
+  return `${d.toFixed(decimals)}° ${cardinal(d)}`;
 }
 
 function dms(value: number, pos: string, neg: string): string {
